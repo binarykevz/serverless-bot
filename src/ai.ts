@@ -1,5 +1,15 @@
 import { createClient } from "@libsql/client/web";
 
+// Helper to convert ArrayBuffer to Base64 for Gemini
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 export class KevinAI {
   private geminiKey: string;
   private geminiModel: string;
@@ -39,32 +49,85 @@ export class KevinAI {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I'm thinking too hard right now.";
   }
 
-  // 2. Image Generation (Using your Custom API)
-  async generateImage(): Promise<string | null> {
+  // 2. Fetch Random Image from your Custom API
+  async fetchRandomImage(): Promise<{ url: string; buffer: ArrayBuffer; mimeType: string } | null> {
     try {
       const res = await fetch(this.imageApiUrl);
+      if (!res.ok) return null;
+      
       const data: any = await res.json();
-      
-      // Adapt this based on your API's actual response structure
-      // Assuming it returns an array of objects or URLs
-      let imageUrl = null;
-      
+      let imageUrl: string | null = null;
+
+      // Handle different possible JSON structures from your API
       if (Array.isArray(data)) {
-        imageUrl = data[0]?.url || data[0];
+        const first = data[0];
+        imageUrl = typeof first === 'string' ? first : first?.url || first?.image_url || first?.src;
       } else if (data.images && Array.isArray(data.images)) {
-        imageUrl = data.images[0]?.url || data.images[0];
+        const first = data.images[0];
+        imageUrl = typeof first === 'string' ? first : first?.url || first?.image_url || first?.src;
       } else if (data.url) {
         imageUrl = data.url;
       }
 
-      return imageUrl;
+      if (!imageUrl) return null;
+
+      // Fetch the actual image binary
+      const imgRes = await fetch(imageUrl);
+      if (!imgRes.ok) return null;
+      
+      const buffer = await imgRes.arrayBuffer();
+      const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+
+      return { url: imageUrl, buffer, mimeType };
     } catch (err) {
-      console.error("Image API failed:", err);
+      console.error("Failed to fetch random image:", err);
       return null;
     }
   }
 
-  // 3. Database Helpers
+  // 3. Pass Image to Gemini Vision for Description
+  async describeImage(imageBuffer: ArrayBuffer, mimeType: string): Promise<string> {
+    try {
+      const base64Image = arrayBufferToBase64(imageBuffer);
+      
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:generateContent?key=${this.geminiKey}`;
+      
+      const prompt = "Look at this image and give a short, natural, conversational description or reaction. Keep it brief, like 1-2 sentences. Stay in your persona (Kevin). Do not say 'Here is an image'.";
+
+      const payload = {
+        contents: [{
+          role: "user",
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType: mimeType,
+                data: base64Image
+              }
+            }
+          ]
+        }],
+        generationConfig: {
+          maxOutputTokens: 150,
+          temperature: 0.8
+        }
+      };
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data: any = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "Here's a pic for you 😭";
+    } catch (err) {
+      console.error("Gemini vision failed:", err);
+      return "Here's something I found 😭";
+    }
+  }
+
+  // 4. Database Helpers
   async getHistory(userId: string): Promise<any[]> {
     const res = await this.db.execute({
       sql: "SELECT role, content FROM conversations WHERE user_id = ? ORDER BY seq DESC LIMIT 10",
@@ -78,10 +141,5 @@ export class KevinAI {
       sql: "INSERT INTO conversations (id, user_id, role, content) VALUES (?, ?, ?, ?)",
       args: [crypto.randomUUID(), userId, role, content]
     });
-  }
-  
-  async initDb() {
-    // Run schema creation here if needed, or assume it exists
-    // For Workers, it's better to run migrations via a script locally or CI
   }
 }
