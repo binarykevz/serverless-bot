@@ -26,9 +26,15 @@ export interface GeneratedImagePayload {
   caption: string;
 }
 
-const IMAGE_TIMEOUT_MS = 15_000;
+const IMAGE_TIMEOUT_MS = 20_000; // 20s timeout for slow APIs
 const GEMINI_TIMEOUT_MS = 20_000;
-const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000; // 4MB safety limit for Workers
+const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000; 
+
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
 
 function normalizeApiUrl(url: string): string {
   return (url || "").trim().replace(/([^:]\/)\/+/g, "$1");
@@ -41,7 +47,6 @@ async function fetchWithTimeout(
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
@@ -50,37 +55,11 @@ async function fetchWithTimeout(
 }
 
 function safeJsonParse(text: string): any | null {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(text); } catch { return null; }
 }
 
 function isHttpUrl(value: unknown): value is string {
   return typeof value === "string" && /^https?:\/\//i.test(value);
-}
-
-function extractUrlFromRecord(record: any): string | null {
-  if (!record || typeof record !== "object") return null;
-
-  const knownKeys = [
-    "url", "image_url", "imageUrl", "image", "src", "file", "file_url",
-    "fileUrl", "link", "photo", "photo_url", "photoUrl", "download_url",
-    "downloadUrl", "original", "large", "regular", "medium", "small", "thumb", "thumbnail"
-  ];
-
-  for (const key of knownKeys) {
-    if (isHttpUrl(record[key])) return record[key];
-  }
-
-  if (record.urls && typeof record.urls === "object") {
-    for (const key of ["raw", "full", "regular", "medium", "small", "thumb"]) {
-      if (isHttpUrl(record.urls[key])) return record.urls[key];
-    }
-  }
-
-  return null;
 }
 
 function findImageUrlInPayload(payload: unknown, depth = 0): string | null {
@@ -96,10 +75,22 @@ function findImageUrlInPayload(payload: unknown, depth = 0): string | null {
   }
 
   if (typeof payload === "object") {
-    const direct = extractUrlFromRecord(payload);
-    if (direct) return direct;
+    const record = payload as Record<string, any>;
+    const knownKeys = [
+      "url", "image_url", "imageUrl", "image", "src", "file", "file_url",
+      "link", "photo", "download_url", "original", "large", "regular", "medium", "small", "thumb"
+    ];
+    for (const key of knownKeys) {
+      if (isHttpUrl(record[key])) return record[key];
+    }
+    
+    if (record.urls && typeof record.urls === "object") {
+      for (const key of ["raw", "full", "regular", "medium", "small", "thumb"]) {
+        if (isHttpUrl(record.urls[key])) return record.urls[key];
+      }
+    }
 
-    for (const value of Object.values(payload)) {
+    for (const value of Object.values(record)) {
       const found = findImageUrlInPayload(value, depth + 1);
       if (found) return found;
     }
@@ -125,9 +116,7 @@ function parseGeminiText(data: any): string | null {
     const parts = data?.candidates?.[0]?.content?.parts ?? [];
     const text = parts.filter((p: any) => typeof p?.text === "string").map((p: any) => p.text).join("\n").trim();
     return text || null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export class KevinAI {
@@ -184,40 +173,70 @@ export class KevinAI {
     }
   }
 
+  // STRICTLY USES YOUR PROVIDED API
   async fetchRandomImage(): Promise<RandomImageResult | null> {
-    // 1. Try Custom API
     try {
-      if (this.imageApiUrl) {
-        const apiRes = await fetchWithTimeout(this.imageApiUrl, { headers: { "Accept": "application/json, image/*" } }, IMAGE_TIMEOUT_MS);
-        if (apiRes.ok) {
-          const contentType = apiRes.headers.get("content-type") || "";
-          if (contentType.startsWith("image/")) {
-            return { url: this.imageApiUrl, buffer: await apiRes.arrayBuffer(), mimeType: contentType };
-          }
-          const json = safeJsonParse(await apiRes.text());
-          const imageUrl = findImageUrlInPayload(json);
-          if (imageUrl) {
-            const imgRes = await fetchWithTimeout(imageUrl, { redirect: "follow" }, IMAGE_TIMEOUT_MS);
-            if (imgRes.ok) return { url: imageUrl, buffer: await imgRes.arrayBuffer(), mimeType: imgRes.headers.get("content-type") || "image/jpeg" };
-          }
-        }
+      if (!this.imageApiUrl) {
+        console.error("[KevinAI] IMAGE_API_URL is missing in env.");
+        return null;
       }
-    } catch (e) {
-      console.warn("[KevinAI] Custom API failed, using fallback.", e);
-    }
 
-    // 2. Guaranteed Fallback (Picsum)
-    try {
-      const fallbackUrl = "https://picsum.photos/800/600";
-      const imgRes = await fetchWithTimeout(fallbackUrl, { redirect: "follow" }, IMAGE_TIMEOUT_MS);
-      if (imgRes.ok) {
-        return { url: imgRes.url || fallbackUrl, buffer: await imgRes.arrayBuffer(), mimeType: "image/jpeg" };
+      console.log(`[KevinAI] Fetching from strictly provided API: ${this.imageApiUrl}`);
+      
+      // Fetch JSON from your API using browser headers to avoid WAF blocks
+      const apiRes = await fetchWithTimeout(this.imageApiUrl, { headers: BROWSER_HEADERS }, IMAGE_TIMEOUT_MS);
+      
+      if (!apiRes.ok) {
+        console.error(`[KevinAI] API failed with status ${apiRes.status}`);
+        return null;
       }
-    } catch (e) {
-      console.error("[KevinAI] Fallback image failed.", e);
-    }
 
-    return null;
+      const contentType = apiRes.headers.get("content-type") || "";
+      let imageUrl: string | null = null;
+
+      // If API returns raw image
+      if (contentType.startsWith("image/")) {
+        const buffer = await apiRes.arrayBuffer();
+        return { url: this.imageApiUrl, buffer, mimeType: contentType };
+      }
+
+      // Parse JSON
+      const text = await apiRes.text();
+      console.log(`[KevinAI] API Response Preview: ${text.substring(0, 300)}`);
+      
+      const json = safeJsonParse(text);
+      if (json) {
+        imageUrl = findImageUrlInPayload(json);
+      }
+
+      if (!imageUrl) {
+        // Fallback regex if JSON parser missed it
+        const match = text.match(/https?:\/\/[^\s"'<>]+\.(?:jpe?g|png|webp|gif|avif)(?:\?[^\s"'<>]*)?/i);
+        if (match) imageUrl = match[0];
+      }
+
+      if (!imageUrl) {
+        console.error("[KevinAI] Could not extract URL from API response.");
+        return null;
+      }
+
+      console.log(`[KevinAI] Extracted Image URL: ${imageUrl}`);
+
+      // Download the actual image
+      const imgRes = await fetchWithTimeout(imageUrl, { headers: BROWSER_HEADERS, redirect: "follow" }, IMAGE_TIMEOUT_MS);
+      if (!imgRes.ok) {
+        console.error(`[KevinAI] Image download failed with status ${imgRes.status}`);
+        return null;
+      }
+
+      const buffer = await imgRes.arrayBuffer();
+      const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+
+      return { url: imageUrl, buffer, mimeType };
+    } catch (error: any) {
+      console.error("[KevinAI] fetchRandomImage exception:", error.message || error);
+      return null;
+    }
   }
 
   async describeImage(imageBuffer: ArrayBuffer, mimeType: string): Promise<string> {
