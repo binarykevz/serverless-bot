@@ -1,7 +1,6 @@
 import { sendMessage, sendPhoto, sendChatAction } from "./telegram";
 import { KevinAI } from "./ai";
 
-// VIP List (Hardcoded for serverless simplicity, or fetch from DB)
 const VIP_USERS = new Set(["123456789", "987654321"]); 
 
 export async function handleUpdate(update: any, env: any) {
@@ -15,54 +14,43 @@ export async function handleUpdate(update: any, env: any) {
 
   const ai = new KevinAI(env);
   
-  // 1. Typing Indicator
   await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "typing");
 
-  // 2. Check for Image Intent
   const isImageRequest = /(generate|create|show|send|pic|picture|photo|image|random)/i.test(text) && 
                          /(pic|picture|photo|image|random|selfie|wallpaper|draw)/i.test(text);
 
   if (isImageRequest) {
-    // Change indicator to uploading photo
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "upload_photo");
 
-    const imageData = await ai.fetchRandomImage();
+    const imageData = await ai.getRandomImageWithCaption();
     
     if (imageData) {
-      // Pass to Gemini for description
-      const description = await ai.describeImage(imageData.buffer, imageData.mimeType);
-      
-      // Send to Telegram using the URL (Telegram downloads it directly)
-      await sendPhoto(env.TELEGRAM_BOT_TOKEN, chatId, imageData.url, description);
-      
+      await sendPhoto(env.TELEGRAM_BOT_TOKEN, chatId, imageData.imageUrl, imageData.caption);
       await ai.saveMessage(userId, "user", text);
-      await ai.saveMessage(userId, "assistant", `[sent image: ${description}]`);
+      await ai.saveMessage(userId, "assistant", `[sent image: ${imageData.caption}]`);
       return;
     } else {
-      const fallback = isVip 
-        ? "Wait lang love, I couldn't find a good picture right now 😭 Try again later?" 
-        : "Sorry, I couldn't fetch an image right now. Try again later.";
+      // This should almost never happen now due to the fallback, but just in case:
+      const fallback = isVip ? "Wait lang, I couldn't find a good picture right now. Try again later?" : "Sorry, couldn't fetch an image right now.";
       await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, fallback);
       return;
     }
   }
 
-  // 3. Text Response
   const history = await ai.getHistory(userId);
   
-  // Build System Prompt (Simplified for Worker)
+  // NEW PERSONALITY PROMPT: Normal, grounded, short, sweet, no exaggerated clinginess, limit emojis
   const systemPrompt = isVip 
-    ? "You are Kevin. VIP boyfriend persona. Clingy, teasing, conyo. User is your love. Keep responses relatively short and natural." 
-    : "You are Kevin. Friendly AI assistant. Keep responses concise.";
+    ? "You are Kevin. You are talking to your partner. Act like a normal, grounded person. Do not be overly exaggerated, clingy, or dramatic. Keep your responses short, sweet, and impactful. Only write long paragraphs if a detailed explanation is absolutely necessary. Limit your use of emojis, and avoid using the crying emoji (😭). Be natural and warm." 
+    : "You are Kevin. A friendly, normal person. Keep responses short, sweet, and natural. Avoid robotic AI phrases. Only explain in detail if strictly necessary. Limit emoji usage.";
 
-  const finalPrompt = `${systemPrompt}\n\nHistory:\n${history.map(h => `${h.role}: ${h.content}`).join("\n")}\n\nUser: ${text}`;
+  const historyText = history.map(h => `${h.role}: ${h.content}`).join("\n");
+  const finalPrompt = `${systemPrompt}\n\nHistory:\n${historyText}\n\nUser: ${text}`;
 
   const reply = await ai.generateText(finalPrompt);
 
-  // 4. Send Reply
   await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, reply);
 
-  // 5. Save to DB
   await ai.saveMessage(userId, "user", text);
   await ai.saveMessage(userId, "assistant", reply);
 }
