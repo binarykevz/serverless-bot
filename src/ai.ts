@@ -5,7 +5,6 @@ type LibsqlClient = ReturnType<typeof createClient>;
 export interface KevinAIEnv {
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
-  IMAGE_API_URL?: string;
   TURSO_DB_URL?: string;
   TURSO_AUTH_TOKEN?: string;
 }
@@ -17,8 +16,8 @@ export interface HistoryMessage {
 
 export interface ApiImageData {
   url: string;
-  title?: string;
-  description?: string;
+  title: string;
+  description: string;
 }
 
 export interface GeneratedImagePayload {
@@ -28,6 +27,9 @@ export interface GeneratedImagePayload {
 
 const GEMINI_TIMEOUT_MS = 20_000;
 const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000; 
+
+// HARDCODED EXACT WORKING URL to bypass any wrangler.toml typos causing 404
+const EXACT_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -53,14 +55,12 @@ function parseGeminiText(data: any): string | null {
 export class KevinAI {
   private geminiKey: string;
   private geminiModel: string;
-  private imageApiUrl: string;
   private db: LibsqlClient | null = null;
   private schemaPromise: Promise<void> | null = null;
 
   constructor(env: KevinAIEnv) {
     this.geminiKey = env.GEMINI_API_KEY;
     this.geminiModel = env.GEMINI_MODEL || "gemini-1.5-flash";
-    this.imageApiUrl = env.IMAGE_API_URL || "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
 
     if (env.TURSO_DB_URL && env.TURSO_AUTH_TOKEN) {
       this.db = createClient({ url: env.TURSO_DB_URL, authToken: env.TURSO_AUTH_TOKEN });
@@ -112,13 +112,14 @@ export class KevinAI {
     }
   }
 
-  // Throws detailed errors so we can see exactly what is failing
+  // STRICT PARSING: Only extracts url, title, and description from data[0]
   async fetchRandomImageData(): Promise<ApiImageData> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
-      const res = await fetch(this.imageApiUrl, { 
+      // Uses the hardcoded URL to guarantee no 404 from env var typos
+      const res = await fetch(EXACT_API_URL, { 
         headers: { "Accept": "application/json" },
         signal: controller.signal
       });
@@ -126,27 +127,26 @@ export class KevinAI {
       clearTimeout(timeout);
 
       if (!res.ok) {
-        throw new Error(`API returned HTTP ${res.status}`);
+        const text = await res.text();
+        throw new Error(`API returned HTTP ${res.status}. Body: ${text.substring(0, 100)}`);
       }
 
-      const text = await res.text();
-      let json: any;
-      
-      try {
-        json = JSON.parse(text);
-      } catch {
-        throw new Error(`API returned invalid JSON: ${text.substring(0, 50)}...`);
+      const json: any = await res.json();
+
+      // STRICTLY PARSE data[0] for url, title, and description
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
+        const item = json.data[0];
+        
+        if (item?.url) {
+          return {
+            url: item.url,
+            title: typeof item.title === 'string' ? item.title : "",
+            description: typeof item.description === 'string' ? item.description : ""
+          };
+        }
       }
 
-      if (json?.data && Array.isArray(json.data) && json.data.length > 0 && json.data[0]?.url) {
-        return {
-          url: json.data[0].url,
-          title: json.data[0].title || "",
-          description: json.data[0].description || ""
-        };
-      }
-
-      throw new Error("No image URL found in API response");
+      throw new Error("No valid image data found in API response");
 
     } catch (e: any) {
       clearTimeout(timeout);
@@ -190,8 +190,10 @@ export class KevinAI {
   async getRandomImageWithCaption(): Promise<GeneratedImagePayload> {
     const imageData = await this.fetchRandomImageData();
 
+    // Base caption uses the parsed title and description
     let caption = imageData.description || imageData.title || "Got this for you 🤍";
 
+    // Try to refine it with Gemini Vision using the parsed context
     try {
       const imgRes = await fetch(imageData.url);
       if (imgRes.ok) {
@@ -199,7 +201,7 @@ export class KevinAI {
         const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
         
         if (buffer.byteLength < MAX_IMAGE_BYTES_FOR_VISION) {
-          const visionPrompt = `Look at this image. The original context was: "${imageData.title} - ${imageData.description}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
+          const visionPrompt = `Look at this image. The original context from the database was Title: "${imageData.title}", Description: "${imageData.description}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
           const visionCaption = await this.describeImage(buffer, mimeType, visionPrompt);
           if (visionCaption && visionCaption !== "Got this for you 🤍") {
             caption = visionCaption;
@@ -207,7 +209,7 @@ export class KevinAI {
         }
       }
     } catch (e) {
-      console.warn("Vision failed, using API description.");
+      console.warn("Vision failed, using API description as caption.");
     }
 
     return { imageUrl: imageData.url, caption };
