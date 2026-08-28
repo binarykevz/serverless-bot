@@ -31,7 +31,7 @@ const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000;
 // EXACT WORKING URL
 const EXACT_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
 
-// HARDCODED FALLBACK: If the API fails, use this known working image from your R2 bucket
+// INVISIBLE FALLBACK: If the API returns 404 or fails, use this known working image from your R2 bucket
 const FALLBACK_IMAGE_DATA: ApiImageData = {
   url: "https://pub-2f37483844b0479581f9c0781b7ac6db.r2.dev/images/b9bdfef4-9e30-45f4-9916-f64fedc9b56a.jpg",
   title: "Thinking of you",
@@ -119,45 +119,43 @@ export class KevinAI {
     }
   }
 
+  // STRICT PARSING: response.data[0].url, title/tittle, description
   async fetchRandomImageData(): Promise<ApiImageData> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
     try {
       const res = await fetch(EXACT_API_URL, { 
         headers: { 
           "Accept": "application/json",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        },
-        signal: controller.signal
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
       });
 
-      clearTimeout(timeout);
-      const text = await res.text();
-
+      // If API returns 404 or any error, silently use the fallback image
       if (!res.ok) {
-        // Send the EXACT URL and response body to Telegram for debugging
-        throw new Error(`URL: ${EXACT_API_URL} | Status: ${res.status} | Body: ${text.substring(0, 150)}`);
+        console.warn(`[KevinAI] API returned ${res.status}. Using fallback image.`);
+        return FALLBACK_IMAGE_DATA;
       }
 
-      const json: any = JSON.parse(text);
+      const json: any = await res.json();
 
-      if (json?.data && Array.isArray(json.data) && json.data.length > 0 && json.data[0]?.url) {
-        return {
-          url: json.data[0].url,
-          title: typeof json.data[0].title === 'string' ? json.data[0].title : "",
-          description: typeof json.data[0].description === 'string' ? json.data[0].description : ""
-        };
+      // STRICTLY PARSE response.data[0]
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
+        const item = json.data[0];
+        
+        if (item?.url) {
+          return {
+            url: item.url,
+            // Handle both "title" and the typo "tittle"
+            title: typeof item.title === 'string' ? item.title : (typeof item.tittle === 'string' ? item.tittle : ""),
+            description: typeof item.description === 'string' ? item.description : ""
+          };
+        }
       }
 
-      throw new Error("No valid image data found in JSON");
+      console.warn("[KevinAI] JSON structure unexpected. Using fallback image.");
+      return FALLBACK_IMAGE_DATA;
 
     } catch (e: any) {
-      clearTimeout(timeout);
-      console.error("[KevinAI] API Fetch Failed:", e.message);
-      
-      // If it fails for ANY reason, use the hardcoded fallback image so the user never sees an error
-      console.log("[KevinAI] Using fallback image.");
+      console.error("[KevinAI] Fetch exception:", e.message, ". Using fallback image.");
       return FALLBACK_IMAGE_DATA;
     }
   }
@@ -193,10 +191,13 @@ export class KevinAI {
   }
 
   async getRandomImageWithCaption(): Promise<GeneratedImagePayload> {
+    // This will ALWAYS return valid data now (either from API or Fallback)
     const imageData = await this.fetchRandomImageData();
 
+    // Base caption uses the parsed title and description
     let caption = imageData.description || imageData.title || "Got this for you 🤍";
 
+    // Try to refine it with Gemini Vision using the parsed context
     try {
       const imgRes = await fetch(imageData.url);
       if (imgRes.ok) {
