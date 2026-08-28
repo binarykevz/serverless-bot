@@ -112,49 +112,48 @@ export class KevinAI {
     }
   }
 
-  // STRICT PARSING: Only extracts url, title, and description from data[0]
-  async fetchRandomImageData(): Promise<ApiImageData | null> {
+  // Throws detailed errors so we can see exactly what is failing
+  async fetchRandomImageData(): Promise<ApiImageData> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
     try {
       const res = await fetch(this.imageApiUrl, { 
-        headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" }
+        headers: { "Accept": "application/json" },
+        signal: controller.signal
       });
 
+      clearTimeout(timeout);
+
       if (!res.ok) {
-        console.error(`[KevinAI] API HTTP Error: ${res.status}`);
-        return null;
+        throw new Error(`API returned HTTP ${res.status}`);
       }
 
       const text = await res.text();
-      // Log the raw response so you can see it in `wrangler tail` if it fails
-      console.log(`[KevinAI] Raw API Response: ${text.substring(0, 300)}`);
-
       let json: any;
+      
       try {
         json = JSON.parse(text);
       } catch {
-        console.error("[KevinAI] API did not return valid JSON.");
-        return null;
+        throw new Error(`API returned invalid JSON: ${text.substring(0, 50)}...`);
       }
 
-      // STRICTLY PARSE data[0]
-      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
-        const firstItem = json.data[0];
-        
-        if (firstItem?.url && typeof firstItem.url === 'string') {
-          return {
-            url: firstItem.url,
-            title: typeof firstItem.title === 'string' ? firstItem.title : undefined,
-            description: typeof firstItem.description === 'string' ? firstItem.description : undefined,
-          };
-        }
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0 && json.data[0]?.url) {
+        return {
+          url: json.data[0].url,
+          title: json.data[0].title || "",
+          description: json.data[0].description || ""
+        };
       }
 
-      console.error("[KevinAI] Could not find valid url in json.data[0]");
-      return null;
+      throw new Error("No image URL found in API response");
 
     } catch (e: any) {
-      console.error("[KevinAI] Fetch/Parse Exception:", e.message);
-      return null;
+      clearTimeout(timeout);
+      if (e.name === 'AbortError') {
+        throw new Error("API request timed out after 15s");
+      }
+      throw e;
     }
   }
 
@@ -188,14 +187,11 @@ export class KevinAI {
     }
   }
 
-  async getRandomImageWithCaption(): Promise<GeneratedImagePayload | null> {
+  async getRandomImageWithCaption(): Promise<GeneratedImagePayload> {
     const imageData = await this.fetchRandomImageData();
-    if (!imageData) return null;
 
-    // Use the API's description or title as the base caption
     let caption = imageData.description || imageData.title || "Got this for you 🤍";
 
-    // Try to refine it with Gemini Vision
     try {
       const imgRes = await fetch(imageData.url);
       if (imgRes.ok) {
@@ -203,7 +199,7 @@ export class KevinAI {
         const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
         
         if (buffer.byteLength < MAX_IMAGE_BYTES_FOR_VISION) {
-          const visionPrompt = `Look at this image. The original context was: "${imageData.title || ''} - ${imageData.description || ''}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
+          const visionPrompt = `Look at this image. The original context was: "${imageData.title} - ${imageData.description}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
           const visionCaption = await this.describeImage(buffer, mimeType, visionPrompt);
           if (visionCaption && visionCaption !== "Got this for you 🤍") {
             caption = visionCaption;
@@ -211,7 +207,7 @@ export class KevinAI {
         }
       }
     } catch (e) {
-      console.warn("[KevinAI] Vision failed, using API description as caption.");
+      console.warn("Vision failed, using API description.");
     }
 
     return { imageUrl: imageData.url, caption };
