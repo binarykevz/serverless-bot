@@ -8,6 +8,10 @@ nodejs_compat = true
 GEMINI_MODEL = "gemini-2.0-flash"
 IMAGE_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1"
 
+[[services]]
+binding = "MEDIA_API"
+service = "media-api"
+
 # Secrets (set these via `wrangler secret put`)
 # TELEGRAM_BOT_TOKEN
 # GEMINI_API_KEY
