@@ -6,7 +6,7 @@ nodejs_compat = true
 [vars]
 # Non-secret variables
 GEMINI_MODEL = "gemini-2.5-flash"
-IMAGE_API_URL = "https://media-api.markmykevin.workers.dev//api/images/random?limit=1"
+IMAGE_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=2"
 
 # Secrets (set these via `wrangler secret put`)
 # TELEGRAM_BOT_TOKEN
