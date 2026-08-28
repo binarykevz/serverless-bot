@@ -5,26 +5,14 @@ type LibsqlClient = ReturnType<typeof createClient>;
 export interface KevinAIEnv {
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
-  IMAGE_API_URL?: string;
   TURSO_DB_URL?: string;
   TURSO_AUTH_TOKEN?: string;
+  MEDIA_API: Fetcher; // Added Service Binding
 }
 
-export interface HistoryMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
-export interface ApiImageData {
-  url: string;
-  title: string;
-  description: string;
-}
-
-export interface GeneratedImagePayload {
-  imageUrl: string;
-  caption: string;
-}
+export interface HistoryMessage { role: "user" | "assistant"; content: string; }
+export interface ApiImageData { url: string; title: string; description: string; }
+export interface GeneratedImagePayload { imageUrl: string; caption: string; }
 
 const GEMINI_TIMEOUT_MS = 20_000;
 const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000;
@@ -45,23 +33,21 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 function parseGeminiText(data: any): string | null {
   try {
     const parts = data?.candidates?.[0]?.content?.parts ?? [];
-    const text = parts.filter((p: any) => typeof p?.text === "string").map((p: any) => p.text).join("\n").trim();
-    return text || null;
+    return parts.filter((p: any) => typeof p?.text === "string").map((p: any) => p.text).join("\n").trim() || null;
   } catch { return null; }
 }
 
 export class KevinAI {
   private geminiKey: string;
   private geminiModel: string;
-  private imageApiUrl: string;
+  private mediaApi: Fetcher; // Internal link to your other worker
   private db: LibsqlClient | null = null;
   private schemaPromise: Promise<void> | null = null;
 
   constructor(env: KevinAIEnv) {
     this.geminiKey = env.GEMINI_API_KEY;
     this.geminiModel = env.GEMINI_MODEL || "gemini-1.5-flash";
-    // Hardcode the exact URL to ignore any env var typos
-    this.imageApiUrl = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
+    this.mediaApi = env.MEDIA_API; // Save the binding
 
     if (env.TURSO_DB_URL && env.TURSO_AUTH_TOKEN) {
       this.db = createClient({ url: env.TURSO_DB_URL, authToken: env.TURSO_AUTH_TOKEN });
@@ -70,16 +56,8 @@ export class KevinAI {
 
   private async initializeSchema(): Promise<void> {
     if (!this.db) return;
-    await this.db.execute({
-      sql: `CREATE TABLE IF NOT EXISTS conversations (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
-        user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )`, args: []
-    });
-    await this.db.execute({
-      sql: `CREATE INDEX IF NOT EXISTS idx_conversations_user_seq ON conversations (user_id, seq DESC)`, args: []
-    });
+    await this.db.execute({ sql: `CREATE TABLE IF NOT EXISTS conversations (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`, args: [] });
+    await this.db.execute({ sql: `CREATE INDEX IF NOT EXISTS idx_conversations_user_seq ON conversations (user_id, seq DESC)`, args: [] });
   }
 
   private ensureSchema(): Promise<void> {
@@ -98,76 +76,40 @@ export class KevinAI {
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          contents: [{ role: "user", parts: [{ text: prompt }] }], 
-          generationConfig: { temperature: 0.7, maxOutputTokens: 512 } 
-        }),
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }),
         signal: controller.signal
       });
       
       clearTimeout(timeout);
       if (!res.ok) return "Hmm, medyo mabagal connection ko ngayon.";
       return parseGeminiText(await res.json()) || "Hmm.";
-    } catch {
-      return "Wait lang, may issue sa connection ko.";
-    }
+    } catch { return "Wait lang, may issue sa connection ko."; }
   }
 
   async fetchRandomImageData(): Promise<ApiImageData> {
     try {
-      const res = await fetch(this.imageApiUrl, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json, text/plain, */*",
-          "Accept-Language": "en-US,en;q=0.9",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Referer": "https://media-api.markmykevin.workers.dev/",
-        },
-        // Cloudflare specific options to bypass cache and edge routing issues
-        cf: {
-          cacheTtl: 0,
-          cacheEverything: false,
-        }
-      });
+      // Create a standard Request object
+      const request = new Request("https://media-api.markmykevin.workers.dev/api/images/random?limit=1");
+      
+      // USE THE SERVICE BINDING: This bypasses the 1042 error completely!
+      const res = await this.mediaApi.fetch(request);
 
-      // Capture the body to see exactly what Cloudflare is returning if it fails
       const bodyText = await res.text();
 
       if (!res.ok) {
-        // If it's HTML, it's likely a Cloudflare WAF/Bot block page
-        const isHtml = bodyText.trim().startsWith("<");
-        const snippet = isHtml ? "[Cloudflare WAF/Bot Block Page Detected]" : bodyText.substring(0, 150);
-        
-        throw new Error(`API returned HTTP ${res.status}. Body: ${snippet}`);
+        throw new Error(`API returned HTTP ${res.status}. Body: ${bodyText.substring(0, 150)}`);
       }
 
       const response = JSON.parse(bodyText);
 
       const parsed = response.data.map(
-        ({
-          url,
-          title,
-          description,
-        }: {
-          url: string;
-          title: string;
-          description: string;
-        }) => ({
-          url,
-          title,
-          description,
-        })
+        ({ url, title, description }: { url: string; title: string; description: string }) => ({ url, title, description })
       );
 
-      if (!parsed || parsed.length === 0) {
-        throw new Error("API returned empty data");
-      }
+      if (!parsed || parsed.length === 0) throw new Error("API returned empty data");
 
       const randomItem = parsed[Math.floor(Math.random() * parsed.length)];
-
-      if (!randomItem?.url) {
-        throw new Error("No valid URL found in API response");
-      }
+      if (!randomItem?.url) throw new Error("No valid URL found in API response");
 
       return {
         url: randomItem.url,
@@ -176,23 +118,15 @@ export class KevinAI {
       };
     } catch (error: any) {
       console.error("[KevinAI] Fetch failed:", error.message);
-      throw error; // Re-throw so handler.ts can catch it
+      throw error;
     }
   }
 
-  async describeImage(
-    imageBuffer: ArrayBuffer,
-    mimeType: string,
-    customPrompt?: string
-  ): Promise<string> {
-    if (!this.geminiKey || imageBuffer.byteLength > MAX_IMAGE_BYTES_FOR_VISION) {
-      return "Got this for you 🤍";
-    }
-
+  async describeImage(imageBuffer: ArrayBuffer, mimeType: string, customPrompt?: string): Promise<string> {
+    if (!this.geminiKey || imageBuffer.byteLength > MAX_IMAGE_BYTES_FOR_VISION) return "Got this for you 🤍";
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:generateContent?key=${this.geminiKey}`;
-      const prompt = customPrompt || "Look at this image. Give a very short, natural, and sweet reaction (1 sentence max). Act like a normal person. Do not use the crying emoji. Do not sound like an AI.";
-      
+      const prompt = customPrompt || "Look at this image. Give a very short, natural, and sweet reaction (1 sentence max). Act like a normal person. Do not use the crying emoji.";
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
 
@@ -209,14 +143,11 @@ export class KevinAI {
       clearTimeout(timeout);
       if (!res.ok) return "Got this for you 🤍";
       return parseGeminiText(await res.json()) || "Got this for you 🤍";
-    } catch {
-      return "Got this for you 🤍";
-    }
+    } catch { return "Got this for you 🤍"; }
   }
 
   async getRandomImageWithCaption(): Promise<GeneratedImagePayload> {
     const imageData = await this.fetchRandomImageData();
-
     let caption = imageData.description || imageData.title || "Got this for you 🤍";
 
     try {
@@ -224,19 +155,13 @@ export class KevinAI {
       if (imgRes.ok) {
         const buffer = await imgRes.arrayBuffer();
         const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
-        
         if (buffer.byteLength < MAX_IMAGE_BYTES_FOR_VISION) {
-          const visionPrompt = `Look at this image. The image title is: "${imageData.title}". The image description is: "${imageData.description}". Give a very short, natural, sweet reaction (1 sentence max). Act like a normal person. Do not use the crying emoji. Do not sound like an AI.`;
-          
+          const visionPrompt = `Look at this image. Title: "${imageData.title}". Description: "${imageData.description}". Give a very short, natural, sweet reaction (1 sentence max). Act like a normal person. No crying emoji.`;
           const visionCaption = await this.describeImage(buffer, mimeType, visionPrompt);
-          if (visionCaption && visionCaption !== "Got this for you 🤍") {
-            caption = visionCaption;
-          }
+          if (visionCaption && visionCaption !== "Got this for you 🤍") caption = visionCaption;
         }
       }
-    } catch (error) {
-      console.warn("Vision failed, using API description as caption.");
-    }
+    } catch (error) { console.warn("Vision failed, using API description."); }
 
     return { imageUrl: imageData.url, caption };
   }
@@ -255,8 +180,6 @@ export class KevinAI {
     try {
       await this.ensureSchema();
       await this.db.execute({ sql: "INSERT INTO conversations (id, user_id, role, content) VALUES (?, ?, ?, ?)", args: [crypto.randomUUID(), userId, role, content] });
-    } catch (error) {
-      console.error("saveMessage error:", error);
-    }
+    } catch (error) { console.error("saveMessage error:", error); }
   }
 }
