@@ -22,19 +22,13 @@ export async function handleUpdate(update: any, env: any) {
   if (isImageRequest) {
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "upload_photo");
 
-    try {
-      const imageData = await ai.getRandomImageWithCaption();
-      
-      await sendPhoto(env.TELEGRAM_BOT_TOKEN, chatId, imageData.imageUrl, imageData.caption);
-      await ai.saveMessage(userId, "user", text);
-      await ai.saveMessage(userId, "assistant", `[sent image: ${imageData.caption}]`);
-      return;
-    } catch (e: any) {
-      console.error("Image fetch failed:", e);
-      // Send the exact error to your chat so we can debug it
-      await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, `Debug Error: ${e.message}`);
-      return;
-    }
+    // Guaranteed to return a valid image payload now
+    const imageData = await ai.getRandomImageWithCaption();
+    
+    await sendPhoto(env.TELEGRAM_BOT_TOKEN, chatId, imageData.imageUrl, imageData.caption);
+    await ai.saveMessage(userId, "user", text);
+    await ai.saveMessage(userId, "assistant", `[sent image: ${imageData.caption}]`);
+    return;
   }
 
   const history = await ai.getHistory(userId);
