@@ -24,8 +24,8 @@ export async function handleUpdate(update: any, env: any) {
 
     const imageData = await ai.getRandomImageWithCaption();
     
-    if (imageData) {
-      // Send the URL directly to Telegram. Telegram's servers will fetch it from R2.
+    if (imageData && imageData.imageUrl) {
+      // Send the image (handles URL and fallback upload automatically)
       await sendPhoto(env.TELEGRAM_BOT_TOKEN, chatId, imageData.imageUrl, imageData.caption);
       await ai.saveMessage(userId, "user", text);
       await ai.saveMessage(userId, "assistant", `[sent image: ${imageData.caption}]`);
@@ -39,7 +39,7 @@ export async function handleUpdate(update: any, env: any) {
 
   const history = await ai.getHistory(userId);
   
-  // NEW PERSONALITY: Grounded, normal person, short/sweet, no exaggerated clinginess, NO CRYING EMOJI
+  // PERSONALITY: Grounded, normal person, short/sweet, no exaggerated clinginess, NO CRYING EMOJI
   const systemPrompt = isVip 
     ? "You are Kevin. Act like a normal, grounded person talking to your partner. Do not be overly exaggerated, clingy, or dramatic. Keep responses short, sweet, and impactful. Only write long paragraphs if a detailed explanation is absolutely necessary. Limit your use of emojis, and strictly avoid using the crying emoji (😭). Be natural, warm, and concise." 
     : "You are Kevin. A friendly, normal person. Keep responses short, sweet, and natural. Avoid robotic AI phrases. Only explain in detail if strictly necessary. Limit emoji usage and never use the crying emoji (😭).";
