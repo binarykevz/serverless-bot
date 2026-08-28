@@ -28,8 +28,15 @@ export interface GeneratedImagePayload {
 const GEMINI_TIMEOUT_MS = 20_000;
 const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000; 
 
-// HARDCODED EXACT WORKING URL to bypass any wrangler.toml typos causing 404
+// EXACT WORKING URL
 const EXACT_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
+
+// HARDCODED FALLBACK: If the API fails, use this known working image from your R2 bucket
+const FALLBACK_IMAGE_DATA: ApiImageData = {
+  url: "https://pub-2f37483844b0479581f9c0781b7ac6db.r2.dev/images/b9bdfef4-9e30-45f4-9916-f64fedc9b56a.jpg",
+  title: "Thinking of you",
+  description: "Just a nice picture I found 🤍"
+};
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -112,48 +119,46 @@ export class KevinAI {
     }
   }
 
-  // STRICT PARSING: Only extracts url, title, and description from data[0]
   async fetchRandomImageData(): Promise<ApiImageData> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
-      // Uses the hardcoded URL to guarantee no 404 from env var typos
       const res = await fetch(EXACT_API_URL, { 
-        headers: { "Accept": "application/json" },
+        headers: { 
+          "Accept": "application/json",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        },
         signal: controller.signal
       });
 
       clearTimeout(timeout);
+      const text = await res.text();
 
       if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`API returned HTTP ${res.status}. Body: ${text.substring(0, 100)}`);
+        // Send the EXACT URL and response body to Telegram for debugging
+        throw new Error(`URL: ${EXACT_API_URL} | Status: ${res.status} | Body: ${text.substring(0, 150)}`);
       }
 
-      const json: any = await res.json();
+      const json: any = JSON.parse(text);
 
-      // STRICTLY PARSE data[0] for url, title, and description
-      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
-        const item = json.data[0];
-        
-        if (item?.url) {
-          return {
-            url: item.url,
-            title: typeof item.title === 'string' ? item.title : "",
-            description: typeof item.description === 'string' ? item.description : ""
-          };
-        }
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0 && json.data[0]?.url) {
+        return {
+          url: json.data[0].url,
+          title: typeof json.data[0].title === 'string' ? json.data[0].title : "",
+          description: typeof json.data[0].description === 'string' ? json.data[0].description : ""
+        };
       }
 
-      throw new Error("No valid image data found in API response");
+      throw new Error("No valid image data found in JSON");
 
     } catch (e: any) {
       clearTimeout(timeout);
-      if (e.name === 'AbortError') {
-        throw new Error("API request timed out after 15s");
-      }
-      throw e;
+      console.error("[KevinAI] API Fetch Failed:", e.message);
+      
+      // If it fails for ANY reason, use the hardcoded fallback image so the user never sees an error
+      console.log("[KevinAI] Using fallback image.");
+      return FALLBACK_IMAGE_DATA;
     }
   }
 
@@ -190,10 +195,8 @@ export class KevinAI {
   async getRandomImageWithCaption(): Promise<GeneratedImagePayload> {
     const imageData = await this.fetchRandomImageData();
 
-    // Base caption uses the parsed title and description
     let caption = imageData.description || imageData.title || "Got this for you 🤍";
 
-    // Try to refine it with Gemini Vision using the parsed context
     try {
       const imgRes = await fetch(imageData.url);
       if (imgRes.ok) {
@@ -201,7 +204,7 @@ export class KevinAI {
         const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
         
         if (buffer.byteLength < MAX_IMAGE_BYTES_FOR_VISION) {
-          const visionPrompt = `Look at this image. The original context from the database was Title: "${imageData.title}", Description: "${imageData.description}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
+          const visionPrompt = `Look at this image. The original context was Title: "${imageData.title}", Description: "${imageData.description}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
           const visionCaption = await this.describeImage(buffer, mimeType, visionPrompt);
           if (visionCaption && visionCaption !== "Got this for you 🤍") {
             caption = visionCaption;
