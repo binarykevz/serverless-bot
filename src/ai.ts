@@ -5,7 +5,7 @@ type LibsqlClient = ReturnType<typeof createClient>;
 export interface KevinAIEnv {
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
-  IMAGE_API_URL: string;
+  IMAGE_API_URL?: string;
   TURSO_DB_URL?: string;
   TURSO_AUTH_TOKEN?: string;
 }
@@ -22,54 +22,6 @@ export interface GeneratedImagePayload {
 
 const GEMINI_TIMEOUT_MS = 20_000;
 const MAX_IMAGE_BYTES_FOR_VISION = 4_000_000; 
-
-function normalizeApiUrl(url: string): string {
-  return (url || "").trim().replace(/([^:]\/)\/+/g, "$1");
-}
-
-function safeJsonParse(text: string): any | null {
-  try { return JSON.parse(text); } catch { return null; }
-}
-
-function isHttpUrl(value: unknown): value is string {
-  return typeof value === "string" && /^https?:\/\//i.test(value);
-}
-
-function findImageUrlInPayload(payload: unknown, depth = 0): string | null {
-  if (depth > 6 || payload === null || payload === undefined) return null;
-  if (typeof payload === "string") return isHttpUrl(payload) ? payload : null;
-
-  if (Array.isArray(payload)) {
-    for (const item of payload) {
-      const found = findImageUrlInPayload(item, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  if (typeof payload === "object") {
-    const record = payload as Record<string, any>;
-    const knownKeys = [
-      "url", "image_url", "imageUrl", "image", "src", "file", "file_url",
-      "link", "photo", "download_url", "original", "large", "regular", "medium", "small", "thumb"
-    ];
-    for (const key of knownKeys) {
-      if (isHttpUrl(record[key])) return record[key];
-    }
-    
-    if (record.urls && typeof record.urls === "object") {
-      for (const key of ["raw", "full", "regular", "medium", "small", "thumb"]) {
-        if (isHttpUrl(record.urls[key])) return record.urls[key];
-      }
-    }
-
-    for (const value of Object.values(record)) {
-      const found = findImageUrlInPayload(value, depth + 1);
-      if (found) return found;
-    }
-  }
-  return null;
-}
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -102,7 +54,9 @@ export class KevinAI {
   constructor(env: KevinAIEnv) {
     this.geminiKey = env.GEMINI_API_KEY;
     this.geminiModel = env.GEMINI_MODEL || "gemini-1.5-flash";
-    this.imageApiUrl = normalizeApiUrl(env.IMAGE_API_URL);
+    
+    // HARDCODED FALLBACK: Guarantees it always uses your API even if env vars fail
+    this.imageApiUrl = env.IMAGE_API_URL || "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
 
     if (env.TURSO_DB_URL && env.TURSO_AUTH_TOKEN) {
       this.db = createClient({ url: env.TURSO_DB_URL, authToken: env.TURSO_AUTH_TOKEN });
@@ -133,7 +87,6 @@ export class KevinAI {
     if (!this.geminiKey) return "Wait lang, may problema sa connection ko.";
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:generateContent?key=${this.geminiKey}`;
-      
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
       
@@ -148,7 +101,6 @@ export class KevinAI {
       });
       
       clearTimeout(timeout);
-
       if (!res.ok) return "Hmm, medyo mabagal connection ko ngayon.";
       return parseGeminiText(await res.json()) || "Hmm.";
     } catch {
@@ -158,33 +110,26 @@ export class KevinAI {
 
   async fetchRandomImageUrl(): Promise<string | null> {
     try {
-      if (!this.imageApiUrl) {
-        console.error("[KevinAI] IMAGE_API_URL is missing in env.");
-        return null;
-      }
-
-      const apiRes = await fetch(this.imageApiUrl, { 
-        headers: { "Accept": "application/json" }
+      const apiRes = await fetch(this.imageApiUrl, {
+        headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" }
       });
-      
+
       if (!apiRes.ok) {
         console.error(`[KevinAI] API failed with status ${apiRes.status}`);
         return null;
       }
 
-      const text = await apiRes.text();
-      const json = safeJsonParse(text);
-      
-      // Direct extraction for your exact API structure: { success: true, data: [{ url: "..." }] }
-      if (json?.data && Array.isArray(json.data) && json.data[0]?.url && isHttpUrl(json.data[0].url)) {
+      const json: any = await apiRes.json();
+
+      // EXACT MATCH for your API structure: { success: true, data: [ { url: "..." } ] }
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0 && json.data[0]?.url) {
         return json.data[0].url;
       }
-      
-      // Fallback deep search
-      const url = findImageUrlInPayload(json);
-      return url;
-    } catch (e) {
-      console.error("[KevinAI] Fetch URL failed:", e);
+
+      console.error("[KevinAI] Unexpected JSON structure:", JSON.stringify(json).substring(0, 200));
+      return null;
+    } catch (e: any) {
+      console.error("[KevinAI] Fetch exception:", e.message);
       return null;
     }
   }
@@ -212,7 +157,6 @@ export class KevinAI {
       });
 
       clearTimeout(timeout);
-
       if (!res.ok) return "Got this for you 🤍";
       return parseGeminiText(await res.json()) || "Got this for you 🤍";
     } catch {
@@ -226,10 +170,9 @@ export class KevinAI {
 
     let caption = "Got this for you 🤍";
     
-    // Try to download and describe, but don't fail the whole request if Vision fails
+    // Best-effort Vision captioning (won't break the image send if it fails)
     try {
       const imgRes = await fetch(imageUrl);
-      
       if (imgRes.ok) {
         const buffer = await imgRes.arrayBuffer();
         const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
