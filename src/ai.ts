@@ -15,6 +15,12 @@ export interface HistoryMessage {
   content: string;
 }
 
+export interface ApiImageData {
+  url: string;
+  title?: string;
+  description?: string;
+}
+
 export interface GeneratedImagePayload {
   imageUrl: string;
   caption: string;
@@ -54,8 +60,6 @@ export class KevinAI {
   constructor(env: KevinAIEnv) {
     this.geminiKey = env.GEMINI_API_KEY;
     this.geminiModel = env.GEMINI_MODEL || "gemini-1.5-flash";
-    
-    // HARDCODED FALLBACK: Guarantees it always uses your API even if env vars fail
     this.imageApiUrl = env.IMAGE_API_URL || "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
 
     if (env.TURSO_DB_URL && env.TURSO_AUTH_TOKEN) {
@@ -108,40 +112,60 @@ export class KevinAI {
     }
   }
 
-  async fetchRandomImageUrl(): Promise<string | null> {
+  // STRICT PARSING: Only extracts url, title, and description from data[0]
+  async fetchRandomImageData(): Promise<ApiImageData | null> {
     try {
-      const apiRes = await fetch(this.imageApiUrl, {
+      const res = await fetch(this.imageApiUrl, { 
         headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" }
       });
 
-      if (!apiRes.ok) {
-        console.error(`[KevinAI] API failed with status ${apiRes.status}`);
+      if (!res.ok) {
+        console.error(`[KevinAI] API HTTP Error: ${res.status}`);
         return null;
       }
 
-      const json: any = await apiRes.json();
+      const text = await res.text();
+      // Log the raw response so you can see it in `wrangler tail` if it fails
+      console.log(`[KevinAI] Raw API Response: ${text.substring(0, 300)}`);
 
-      // EXACT MATCH for your API structure: { success: true, data: [ { url: "..." } ] }
-      if (json?.data && Array.isArray(json.data) && json.data.length > 0 && json.data[0]?.url) {
-        return json.data[0].url;
+      let json: any;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        console.error("[KevinAI] API did not return valid JSON.");
+        return null;
       }
 
-      console.error("[KevinAI] Unexpected JSON structure:", JSON.stringify(json).substring(0, 200));
+      // STRICTLY PARSE data[0]
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
+        const firstItem = json.data[0];
+        
+        if (firstItem?.url && typeof firstItem.url === 'string') {
+          return {
+            url: firstItem.url,
+            title: typeof firstItem.title === 'string' ? firstItem.title : undefined,
+            description: typeof firstItem.description === 'string' ? firstItem.description : undefined,
+          };
+        }
+      }
+
+      console.error("[KevinAI] Could not find valid url in json.data[0]");
       return null;
+
     } catch (e: any) {
-      console.error("[KevinAI] Fetch exception:", e.message);
+      console.error("[KevinAI] Fetch/Parse Exception:", e.message);
       return null;
     }
   }
 
-  async describeImage(imageBuffer: ArrayBuffer, mimeType: string): Promise<string> {
+  async describeImage(imageBuffer: ArrayBuffer, mimeType: string, customPrompt?: string): Promise<string> {
     if (!this.geminiKey || imageBuffer.byteLength > MAX_IMAGE_BYTES_FOR_VISION) {
       return "Got this for you 🤍";
     }
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.geminiModel}:generateContent?key=${this.geminiKey}`;
-      const prompt = "Look at this image. Give a very short, natural, and sweet reaction (1 sentence max). Act like a normal person. Do not use the crying emoji (😭). Do not sound like an AI.";
+      const prompt = customPrompt || "Look at this image. Give a very short, natural, and sweet reaction (1 sentence max). Act like a normal person. Do not use the crying emoji (😭). Do not sound like an AI.";
       
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
@@ -165,30 +189,32 @@ export class KevinAI {
   }
 
   async getRandomImageWithCaption(): Promise<GeneratedImagePayload | null> {
-    const imageUrl = await this.fetchRandomImageUrl();
-    if (!imageUrl) return null;
+    const imageData = await this.fetchRandomImageData();
+    if (!imageData) return null;
 
-    let caption = "Got this for you 🤍";
-    
-    // Best-effort Vision captioning (won't break the image send if it fails)
+    // Use the API's description or title as the base caption
+    let caption = imageData.description || imageData.title || "Got this for you 🤍";
+
+    // Try to refine it with Gemini Vision
     try {
-      const imgRes = await fetch(imageUrl);
+      const imgRes = await fetch(imageData.url);
       if (imgRes.ok) {
         const buffer = await imgRes.arrayBuffer();
         const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
         
         if (buffer.byteLength < MAX_IMAGE_BYTES_FOR_VISION) {
-          const visionCaption = await this.describeImage(buffer, mimeType);
+          const visionPrompt = `Look at this image. The original context was: "${imageData.title || ''} - ${imageData.description || ''}". Rewrite this into a very short, natural, sweet reaction (1 sentence max) as Kevin. Act like a normal person. Do not use the crying emoji (😭).`;
+          const visionCaption = await this.describeImage(buffer, mimeType, visionPrompt);
           if (visionCaption && visionCaption !== "Got this for you 🤍") {
             caption = visionCaption;
           }
         }
       }
     } catch (e) {
-      console.warn("[KevinAI] Vision failed, using fallback caption:", e);
+      console.warn("[KevinAI] Vision failed, using API description as caption.");
     }
 
-    return { imageUrl, caption };
+    return { imageUrl: imageData.url, caption };
   }
 
   async getHistory(userId: string, limit = 10): Promise<HistoryMessage[]> {
