@@ -34,12 +34,16 @@ export async function sendPhoto(token: string, chatId: number | string, photoUrl
     console.warn("[Telegram] URL send exception, downloading and uploading...", e);
   }
 
-  // Fallback: Download image and upload via multipart/form-data (Guaranteed delivery)
+  // Fallback: Download image and upload via multipart/form-data
   try {
     const imgRes = await fetch(photoUrl);
     if (!imgRes.ok) throw new Error("Failed to download image for upload");
     
-    const blob = await imgRes.blob();
+    // Use arrayBuffer instead of blob() for better Worker compatibility
+    const arrayBuffer = await imgRes.arrayBuffer();
+    const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+    const blob = new Blob([arrayBuffer], { type: mimeType });
+
     const formData = new FormData();
     formData.append("chat_id", String(chatId));
     formData.append("photo", blob, "image.jpg");
