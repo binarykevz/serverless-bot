@@ -25,12 +25,12 @@ export async function handleUpdate(update: any, env: any) {
     const imageData = await ai.getRandomImageWithCaption();
     
     if (imageData) {
+      // Send the URL directly to Telegram. Telegram's servers will fetch it from R2.
       await sendPhoto(env.TELEGRAM_BOT_TOKEN, chatId, imageData.imageUrl, imageData.caption);
       await ai.saveMessage(userId, "user", text);
       await ai.saveMessage(userId, "assistant", `[sent image: ${imageData.caption}]`);
       return;
     } else {
-      // This should almost never happen now due to the fallback, but just in case:
       const fallback = isVip ? "Wait lang, I couldn't find a good picture right now. Try again later?" : "Sorry, couldn't fetch an image right now.";
       await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, fallback);
       return;
@@ -39,10 +39,10 @@ export async function handleUpdate(update: any, env: any) {
 
   const history = await ai.getHistory(userId);
   
-  // NEW PERSONALITY PROMPT: Normal, grounded, short, sweet, no exaggerated clinginess, limit emojis
+  // NEW PERSONALITY: Grounded, normal person, short/sweet, no exaggerated clinginess, NO CRYING EMOJI
   const systemPrompt = isVip 
-    ? "You are Kevin. You are talking to your partner. Act like a normal, grounded person. Do not be overly exaggerated, clingy, or dramatic. Keep your responses short, sweet, and impactful. Only write long paragraphs if a detailed explanation is absolutely necessary. Limit your use of emojis, and avoid using the crying emoji (😭). Be natural and warm." 
-    : "You are Kevin. A friendly, normal person. Keep responses short, sweet, and natural. Avoid robotic AI phrases. Only explain in detail if strictly necessary. Limit emoji usage.";
+    ? "You are Kevin. Act like a normal, grounded person talking to your partner. Do not be overly exaggerated, clingy, or dramatic. Keep responses short, sweet, and impactful. Only write long paragraphs if a detailed explanation is absolutely necessary. Limit your use of emojis, and strictly avoid using the crying emoji (😭). Be natural, warm, and concise." 
+    : "You are Kevin. A friendly, normal person. Keep responses short, sweet, and natural. Avoid robotic AI phrases. Only explain in detail if strictly necessary. Limit emoji usage and never use the crying emoji (😭).";
 
   const historyText = history.map(h => `${h.role}: ${h.content}`).join("\n");
   const finalPrompt = `${systemPrompt}\n\nHistory:\n${historyText}\n\nUser: ${text}`;
