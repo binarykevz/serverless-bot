@@ -152,11 +152,14 @@ export class KevinAI {
   }
 
   async fetchRandomImageData(): Promise<ApiImageData> {
-    const res = await fetch(this.imageApiUrl, {
+    // FIX: Removed unsupported `cache: "no-store"` property.
+    // Added a timestamp query parameter to bypass edge caching and guarantee a fresh request.
+    const cacheBusterUrl = `${this.imageApiUrl}${this.imageApiUrl.includes('?') ? '&' : '?'}_t=${Date.now()}`;
+
+    const res = await fetch(cacheBusterUrl, {
       headers: {
         Accept: "application/json",
       },
-      cache: "no-store",
     });
 
     if (!res.ok) {
