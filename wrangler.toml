@@ -5,7 +5,7 @@ nodejs_compat = true
 
 [vars]
 # Change this if your Agent Router base URL is different
-AI_ROUTER_BASE_URL = "https://api.agentrouter.ai/v1"
+AI_ROUTER_BASE_URL = "https://agentrouter.org"
 
 # Change this if your router expects a different Claude model ID
 AI_ROUTER_MODEL = "claude-opus-4.8"
