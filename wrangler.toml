@@ -1,20 +1,27 @@
 name = "kevin-companion"
 main = "src/index.ts"
-compatibility_date = "2024-09-25"
-nodejs_compat = true
+compatibility_date = "2025-01-01"
+node_compat = true
 
 [vars]
-# Non-secret variables
-GEMINI_MODEL = "gemini-2.0-flash"
+# Change this if your Agent Router base URL is different
+AI_ROUTER_BASE_URL = "https://api.agentrouter.ai/v1"
+
+# Change this if your router expects a different Claude model ID
+AI_ROUTER_MODEL = "claude-opus-4.8"
+
 IMAGE_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1"
+
+# Comma-separated Telegram user IDs
+VIP_USER_IDS = "YOUR_TELEGRAM_USER_ID"
+
+# Secrets you need to set:
+# TELEGRAM_BOT_TOKEN
+# AI_ROUTER_API_KEY
+# TURSO_DB_URL
+# TURSO_AUTH_TOKEN
+# WEBHOOK_SECRET
 
 [[services]]
 binding = "MEDIA_API"
 service = "media-api"
-
-# Secrets (set these via `wrangler secret put`)
-# TELEGRAM_BOT_TOKEN
-# GEMINI_API_KEY
-# TURSO_DB_URL
-# TURSO_AUTH_TOKEN
-# WEBHOOK_SECRET
