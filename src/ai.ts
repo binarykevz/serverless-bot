@@ -245,7 +245,7 @@ export class KevinAI {
     return clean;
   }
 
-  private async callAIRouter(
+   private async callAIRouter(
     messages: any[],
     options: {
       temperature?: number;
@@ -279,7 +279,16 @@ export class KevinAI {
         signal: controller.signal,
       });
 
-      const data: any = await res.json();
+      // Read as text first to prevent JSON parse crashes on Cloudflare errors
+      const rawText = await res.text();
+      let data: any;
+
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        // Catches "error code: 1016" and other non-JSON Cloudflare/Origin errors
+        throw new Error(`AI Router DNS/Connection Error (HTTP ${res.status}): ${rawText.slice(0, 150)}`);
+      }
 
       if (!res.ok) {
         const message =
@@ -290,6 +299,7 @@ export class KevinAI {
         throw new Error(message);
       }
 
+      // Handle OpenAI/Router format
       const content =
         data?.choices?.[0]?.message?.content ??
         data?.content?.[0]?.text ??
