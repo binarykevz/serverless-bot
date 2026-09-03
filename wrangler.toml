@@ -6,7 +6,7 @@ nodejs_compat = true
 [vars]
 AI_ROUTER_MODEL = "liquid/lfm-2.5-2.6b:free"
 IMAGE_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1"
-VIP_USER_IDS = "YOUR_TELEGRAM_USER_ID"
+VIP_USER_IDS = "6076887662,6895315219"
 
 # Secrets you still need to set via `npx wrangler secret put`:
 # TELEGRAM_BOT_TOKEN
