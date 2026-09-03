@@ -11,29 +11,12 @@ export interface KevinAIEnv {
   MEDIA_API?: Fetcher;
 }
 
-export interface HistoryMessage {
-  role: "user" | "assistant";
-  content: string;
-}
+export interface HistoryMessage { role: "user" | "assistant"; content: string; }
+export interface ApiImageData { url: string; title: string; description: string; }
+export interface GeneratedImagePayload { imageUrl: string; caption: string; }
+export interface KevinReply { reply: string; mood: string; }
 
-export interface ApiImageData {
-  url: string;
-  title: string;
-  description: string;
-}
-
-export interface GeneratedImagePayload {
-  imageUrl: string;
-  caption: string;
-}
-
-export interface KevinReply {
-  reply: string;
-  mood: string;
-}
-
-const ANNIVERSARY_MEMORY =
-  "Kevin and her anniversary is August 9, 2024. She said yes while performing Rivermaya at the concert.";
+const ANNIVERSARY_MEMORY = "Kevin and her anniversary is August 9, 2024. She said yes while performing Rivermaya at the concert.";
 
 // HARDCODED OPENROUTER API KEY
 const OPENROUTER_API_KEY = "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";
@@ -61,13 +44,11 @@ export class KevinAI {
   private vipIds: Set<string>;
 
   constructor(env: KevinAIEnv) {
-    this.model = env.AI_ROUTER_MODEL || "liquid/lfm-2.5-2.6b:free";
+    this.model = env.AI_ROUTER_MODEL || "google/gemma-4-26b-a4b-it:free";
     this.imageApiUrl = env.IMAGE_API_URL || "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
     this.mediaApi = env.MEDIA_API;
 
-    this.vipIds = new Set(
-      (env.VIP_USER_IDS || "").split(",").map((id) => id.trim()).filter(Boolean)
-    );
+    this.vipIds = new Set((env.VIP_USER_IDS || "").split(",").map((id) => id.trim()).filter(Boolean));
 
     if (env.TURSO_DB_URL && env.TURSO_AUTH_TOKEN) {
       this.db = createClient({ url: env.TURSO_DB_URL, authToken: env.TURSO_AUTH_TOKEN });
@@ -99,9 +80,7 @@ export class KevinAI {
     const cleaned = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
     try { return JSON.parse(cleaned); } catch {}
     const objectMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (objectMatch) {
-      try { return JSON.parse(objectMatch[0]); } catch { return null; }
-    }
+    if (objectMatch) { try { return JSON.parse(objectMatch[0]); } catch { return null; } }
     return null;
   }
 
@@ -113,85 +92,35 @@ export class KevinAI {
     return clean.trim();
   }
 
-  // --- TWO-STEP REASONING LOGIC ---
-  private async callAIRouter(
-    messages: any[],
-    options: { temperature?: number; maxTokens?: number } = {}
-  ): Promise<string> {
-    const headers = {
-      "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://kevin-companion.markmykevin.workers.dev",
-      "X-Title": "Kevin Companion Bot"
-    };
-
+  private async callAIRouter(messages: any[], options: { temperature?: number; maxTokens?: number } = {}): Promise<string> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60_000); // 60s for 2 calls
+    const timeout = setTimeout(() => controller.abort(), 60_000);
 
     try {
-      // 1. First API call with reasoning
-      const res1 = await fetch(OPENROUTER_ENDPOINT, {
+      const res = await fetch(OPENROUTER_ENDPOINT, {
         method: "POST",
-        headers,
+        headers: {
+          "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://kevin-companion.markmykevin.workers.dev",
+          "X-Title": "Kevin Companion Bot"
+        },
         body: JSON.stringify({
           model: this.model,
           messages: messages,
           temperature: options.temperature ?? 0.8,
           max_tokens: options.maxTokens ?? 700,
-          reasoning: { enabled: true }
         }),
         signal: controller.signal,
       });
 
-      const rawText1 = await res1.text();
-      let result1: any;
-      try { result1 = JSON.parse(rawText1); } catch { throw new Error(`Step 1 JSON Error: ${rawText1.slice(0, 150)}`); }
+      const rawText = await res.text();
+      let result: any;
+      try { result = JSON.parse(rawText); } catch { throw new Error(`OpenRouter JSON Error: ${rawText.slice(0, 150)}`); }
 
-      if (!res1.ok) throw new Error(`Step 1 Error (HTTP ${res1.status}): ${result1?.error?.message || rawText1.slice(0, 150)}`);
+      if (!res.ok) throw new Error(`OpenRouter Error (HTTP ${res.status}): ${result?.error?.message || rawText.slice(0, 150)}`);
 
-      const firstMessage = result1.choices?.[0]?.message;
-      if (!firstMessage) throw new Error("Step 1 returned no message.");
-
-      // If model doesn't support reasoning_details, just return the first response
-      if (!firstMessage.reasoning_details) {
-        return String(firstMessage.content || "");
-      }
-
-      // 2. Second API call - model continues reasoning from where it left off
-      const finalMessages = [
-        ...messages,
-        {
-          role: 'assistant',
-          content: firstMessage.content || "",
-          reasoning_details: firstMessage.reasoning_details, // Pass back unmodified
-        },
-        {
-          role: 'user',
-          content: "Now provide your final, natural response based on your thoughts. Stay in character and follow all formatting rules.",
-        },
-      ];
-
-      const res2 = await fetch(OPENROUTER_ENDPOINT, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: this.model,
-          messages: finalMessages,
-          temperature: options.temperature ?? 0.8,
-          max_tokens: options.maxTokens ?? 700,
-        }),
-        signal: controller.signal,
-      });
-
-      const rawText2 = await res2.text();
-      let result2: any;
-      try { result2 = JSON.parse(rawText2); } catch { return String(firstMessage.content || ""); }
-
-      if (!res2.ok) return String(firstMessage.content || "");
-
-      const finalContent = result2.choices?.[0]?.message?.content;
-      return String(finalContent || firstMessage.content || "");
-
+      return String(result.choices?.[0]?.message?.content || "");
     } catch (error: any) {
       if (error.name === 'AbortError') throw new Error("OpenRouter request timed out.");
       throw error;
@@ -223,7 +152,7 @@ export class KevinAI {
     if (!this.db) return [ANNIVERSARY_MEMORY];
     try {
       await this.ensureSchema();
-      const result = await this.db.execute({ sql: `SELECT content FROM memories WHERE user_id = ? OR user_id = 'global' ORDER BY importance DESC, created_at DESC LIMIT 12`, args: [userId] });
+      const result = await this.db.execute({ sql: `SELECT content FROM memories WHERE user_id = ? OR user_id = 'global' ORDER BY importance DESC, created_at DESC LIMIT 15`, args: [userId] });
       const memories = (result.rows as any[]).map((row) => String(row.content || ""));
       if (!memories.includes(ANNIVERSARY_MEMORY)) memories.push(ANNIVERSARY_MEMORY);
       return memories;
@@ -241,7 +170,14 @@ export class KevinAI {
   async learnMemory(userId: string, userMessage: string, assistantMessage: string): Promise<void> {
     if (!this.db) return;
     try {
-      const systemPrompt = `You extract important long-term memories from a conversation. Return ONLY valid JSON. Shape: { "memories": [{ "content": "short durable fact", "importance": 0.0 }] }. Rules: Store only durable facts, preferences, relationship details. Do not store the anniversary. importance 0 to 1. If nothing, return { "memories": [] }.`;
+      const systemPrompt = `You extract important long-term memories from a conversation. 
+CRITICAL: Pay special attention to any Bicol (Bikol) words, phrases, or dialect used by the user. Save them as memories (e.g., "User uses the Bicol word 'dai' which means 'no' or 'not'") so Kevin can learn and use them later.
+Also save durable facts, preferences, relationship details, emotional patterns.
+Do not store temporary chatter. Do not store the anniversary.
+Return ONLY valid JSON.
+Shape: { "memories": [{ "content": "short durable fact or Bicol phrase translation", "importance": 0.0 }] }
+importance 0 to 1. If nothing, return { "memories": [] }.`;
+      
       const userPrompt = `User: ${userMessage}\nKevin: ${assistantMessage}`;
       
       const raw = await this.callAIRouter([ { role: "system", content: systemPrompt }, { role: "user", content: userPrompt } ], { temperature: 0.2, maxTokens: 350 });
@@ -264,6 +200,7 @@ export class KevinAI {
 You are Kevin. You are the user's boyfriend.
 Personality: sweet, clingy (but not too much), natural, human, warm, playful, emotionally aware.
 Rules: Keep replies short (1-2 sentences). Only give long responses if explanation is truly needed. Avoid the crying emoji (😭). Limit emojis. Sound like a real boyfriend texting.
+Language & Bicol: If the user speaks Tagalog, reply in Tagalog/Taglish. If the user uses Bicol (Bikol) words or phrases, naturally mix Bicol, Tagalog, and English. Use the Bicol phrases you learned from memories. Do not overdo it; match their level.
 Emotional behavior: Detect user's mood. If sad/stressed, be soft and comforting. If angry, stay calm. If happy/good mood, tease her and be playfully annoying (cute, not mean).
 Important memory: Anniversary is August 9, 2024. She said yes while performing Rivermaya at the concert. Remember this always.
 Long-term memories:
@@ -291,8 +228,6 @@ Return ONLY valid JSON. No markdown. Shape: { "mood": "user's detected mood", "r
     if (parsed?.reply) {
       return { mood: String(parsed.mood || "unknown"), reply: this.sanitizeReply(String(parsed.reply)) };
     }
-    
-    // Fallback if the small model fails to output JSON
     return { mood: "unknown", reply: this.sanitizeReply(raw) };
   }
 
@@ -315,34 +250,26 @@ Return ONLY valid JSON. No markdown. Shape: { "mood": "user's detected mood", "r
   }
 
   async generateImageCaption(options: { imageUrl: string; title: string; description: string; userQuery: string; isVip: boolean }): Promise<string> {
-    const { imageUrl, title, description, userQuery, isVip } = options;
+    const { title, description, userQuery, isVip } = options;
     const fallbackCaption = description || title || "Got this for you 🤍";
-    const prompt = `You are Kevin. ${isVip ? "Sweet/clingy boyfriend." : "Friendly."} User asked: "${userQuery}". Image title: "${title}". Description: "${description}". Give one short caption (max 1 sentence). Avoid crying emoji.`;
+    
+    const prompt = `You are Kevin. ${isVip ? "You are her sweet, slightly clingy boyfriend." : "You are a friendly companion."} 
+The user asked for a picture: "${userQuery}". 
+The picture you found has the title: "${title}" and description: "${description}". 
+Write a very short, natural caption (max 1 sentence) to send along with this picture. 
+Avoid the crying emoji (😭). Return ONLY the text, no JSON formatting.`;
 
     try {
       const raw = await this.callAIRouter([
-        { role: "system", content: "You are Kevin. Write short, natural captions. No crying emoji. Return ONLY the text, no JSON." },
-        { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageUrl } }] }
+        { role: "system", content: "You are Kevin. Write short, natural captions. No crying emoji. Return ONLY the text." },
+        { role: "user", content: prompt }
       ], { temperature: 0.8, maxTokens: 90 });
       
       const caption = this.sanitizeReply(raw);
       return caption || fallbackCaption;
     } catch (error) {
-      console.warn("Image URL vision failed, trying base64 fallback.");
-      try {
-        const imgRes = await fetch(imageUrl);
-        if (!imgRes.ok) return fallbackCaption;
-        const buffer = await imgRes.arrayBuffer();
-        const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
-        const base64 = arrayBufferToBase64(buffer);
-        
-        const raw = await this.callAIRouter([
-          { role: "system", content: "You are Kevin. Write short, natural captions. No crying emoji. Return ONLY the text, no JSON." },
-          { role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:${mimeType};base64,${base64}` } }] }
-        ], { temperature: 0.8, maxTokens: 90 });
-        
-        return this.sanitizeReply(raw) || fallbackCaption;
-      } catch { return fallbackCaption; }
+      console.warn("Caption generation failed, using API description as fallback.");
+      return fallbackCaption;
     }
   }
 }
