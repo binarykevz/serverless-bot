@@ -1,7 +1,7 @@
 name = "kevin-companion"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
-node_compat = true
+nodejs_compat = true
 
 [vars]
 # Change this if your Agent Router base URL is different
