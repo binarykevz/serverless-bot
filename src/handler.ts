@@ -1,64 +1,111 @@
 import { sendMessage, sendPhoto, sendChatAction } from "./telegram";
 import { KevinAI } from "./ai";
 
-const VIP_USERS = new Set(["123456789", "987654321"]);
+function isImageRequest(text: string): boolean {
+  const cleaned = text.trim();
+
+  if (!cleaned) return false;
+
+  const noun = /(pic|picture|photo|image|wallpaper|selfie)/i;
+  const verb = /(send|show|give|share|post|generate|create|random)/i;
+
+  if (noun.test(cleaned) && verb.test(cleaned)) {
+    return true;
+  }
+
+  return /^(pic|picture|photo|image|random pic|random picture|random photo|random image)$/i.test(
+    cleaned
+  );
+}
 
 export async function handleUpdate(update: any, env: any) {
   const message = update.message;
+
   if (!message) return;
 
   const chatId = message.chat.id;
   const userId = String(message.from.id);
   const text = message.text || "";
-  const isVip = VIP_USERS.has(userId);
+
+  if (!text) return;
 
   const ai = new KevinAI(env);
 
+  const isVip = await ai.isVip(userId);
+
   await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "typing");
 
-  const isImageRequest =
-    /(generate|create|show|send|pic|picture|photo|image|random)/i.test(text) &&
-    /(pic|picture|photo|image|random|selfie|wallpaper|draw)/i.test(text);
-
-  if (isImageRequest) {
+  if (isImageRequest(text)) {
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "upload_photo");
 
     try {
-      const imageData = await ai.getRandomImageWithCaption();
+      const imageData = await ai.fetchRandomImageData();
 
-      await sendPhoto(
+      const caption = await ai.generateImageCaption({
+        imageUrl: imageData.url,
+        title: imageData.title,
+        description: imageData.description,
+        userQuery: text,
+        isVip,
+      });
+
+      const sent = await sendPhoto(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
         imageData.imageUrl,
-        imageData.caption
+        caption
       );
 
+      if (!sent?.ok) {
+        throw new Error("Telegram sendPhoto failed.");
+      }
+
       await ai.saveMessage(userId, "user", text);
-      await ai.saveMessage(userId, "assistant", `[sent image: ${imageData.caption}]`);
+      await ai.saveMessage(userId, "assistant", `[image] ${caption}`);
+
+      if (isVip) {
+        await ai.learnMemory(userId, text, caption);
+      }
     } catch (error: any) {
-      console.error("Image fetch failed:", error?.message);
-      
-      // Send the exact error to Telegram so we can see what the 404 body is
-      const debugMsg = `Debug 404: ${error?.message || "Unknown error"}`;
-      await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, debugMsg);
+      console.error("Image request failed:", error?.message);
+
+      const errorMessage = isVip
+        ? "Aww, I couldn't get a picture right now 🥺 Try again?"
+        : "Sorry, couldn't fetch an image right now.";
+
+      await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, errorMessage);
     }
 
     return;
   }
 
-  const history = await ai.getHistory(userId);
+  try {
+    const history = await ai.getHistory(userId, isVip ? 18 : 10);
+    const memories = await ai.getMemories(userId);
 
-  const systemPrompt = isVip
-    ? "You are Kevin. Act like a normal, grounded person talking to your partner. Do not be overly exaggerated, clingy, or dramatic. Keep responses short, sweet, and impactful. Only write long paragraphs if a detailed explanation is absolutely necessary. Limit your use of emojis, and strictly avoid using the crying emoji. Be natural, warm, and concise."
-    : "You are Kevin. A friendly, normal person. Keep responses short, sweet, and natural. Avoid robotic AI phrases. Only explain in detail if strictly necessary. Limit emoji usage and never use the crying emoji.";
+    const result = await ai.generateReply({
+      userId,
+      isVip,
+      text,
+      history,
+      memories,
+    });
 
-  const historyText = history.map((h) => `${h.role}: ${h.content}`).join("\n");
-  const finalPrompt = `${systemPrompt}\n\nHistory:\n${historyText}\n\nUser: ${text}`;
+    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, result.reply);
 
-  const reply = await ai.generateText(finalPrompt);
+    await ai.saveMessage(userId, "user", text);
+    await ai.saveMessage(userId, "assistant", result.reply);
 
-  await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, reply);
+    if (isVip) {
+      await ai.learnMemory(userId, text, result.reply);
+    }
+  } catch (error: any) {
+    console.error("Kevin reply failed:", error?.message);
 
-  await ai.saveMessage(userId, "user", text);
-  await ai.saveMessage(userId, "assistant", reply);
+    const errorMessage = isVip
+      ? "Babe, my brain lagged for a second 🥺 Try me again?"
+      : "Sorry, I had a connection issue.";
+
+    await sendMessage(env.TELEGRAM_BOT_TOKEN, chatId, errorMessage);
+  }
 }
