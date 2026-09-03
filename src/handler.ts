@@ -1,46 +1,49 @@
 import { sendMessage, sendPhoto, sendChatAction } from "./telegram";
 import { KevinAI } from "./ai";
 
+// EXTREMELY BROAD IMAGE DETECTION
 function isImageRequest(text: string): boolean {
-  const cleaned = text.trim();
-
+  const cleaned = text.toLowerCase().trim();
   if (!cleaned) return false;
 
-  const noun = /(pic|picture|photo|image|wallpaper|selfie)/i;
-  const verb = /(send|show|give|share|post|generate|create|random)/i;
+  // 1. Check for Action + Noun (e.g., "send pic", "padala ka photo", "picturan mo ako")
+  const hasAction = /(send|show|give|share|post|generate|create|padala|ipadala|bigyan|picturan|gawa|bigay)/i.test(cleaned);
+  const hasNoun = /(pic|picture|photo|image|wallpaper|selfie|pict|pics|pictures|photos|images)/i.test(cleaned);
+  
+  if (hasAction && hasNoun) return true;
 
-  if (noun.test(cleaned) && verb.test(cleaned)) {
-    return true;
-  }
+  // 2. Check for direct noun requests (e.g., "random pic", "picture", "pic mo")
+  if (/(^|\s)(pic|picture|photo|image|wallpaper|selfie|pict)(s)?(\s|$| mo| ko| nga)/i.test(cleaned)) return true;
 
-  return /^(pic|picture|photo|image|random pic|random picture|random photo|random image)$/i.test(
-    cleaned
-  );
+  // 3. Exact short commands
+  if (/^(pic|picture|photo|image|random pic|random picture|random photo|random image|picturan)$/i.test(cleaned)) return true;
+
+  return false;
 }
 
 export async function handleUpdate(update: any, env: any) {
   const message = update.message;
-
   if (!message) return;
 
   const chatId = message.chat.id;
   const userId = String(message.from.id);
   const text = message.text || "";
-
   if (!text) return;
 
   const ai = new KevinAI(env);
-
   const isVip = await ai.isVip(userId);
 
   await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "typing");
 
+  // IF USER ASKS FOR A PICTURE -> CALL IMAGE API
   if (isImageRequest(text)) {
     await sendChatAction(env.TELEGRAM_BOT_TOKEN, chatId, "upload_photo");
 
     try {
+      // 1. STRICTLY CALL THE IMAGE API
       const imageData = await ai.fetchRandomImageData();
 
+      // 2. Generate caption using the text model (since liquid/lfm is text-only)
       const caption = await ai.generateImageCaption({
         imageUrl: imageData.url,
         title: imageData.title,
@@ -49,10 +52,11 @@ export async function handleUpdate(update: any, env: any) {
         isVip,
       });
 
+      // 3. Send the random image URL to Telegram
       const sent = await sendPhoto(
         env.TELEGRAM_BOT_TOKEN,
         chatId,
-        imageData.imageUrl,
+        imageData.url, // MUST BE .url
         caption
       );
 
@@ -61,7 +65,7 @@ export async function handleUpdate(update: any, env: any) {
       }
 
       await ai.saveMessage(userId, "user", text);
-      await ai.saveMessage(userId, "assistant", `[image] ${caption}`);
+      await ai.saveMessage(userId, "assistant", `[sent image: ${caption}]`);
 
       if (isVip) {
         await ai.learnMemory(userId, text, caption);
@@ -79,6 +83,7 @@ export async function handleUpdate(update: any, env: any) {
     return;
   }
 
+  // NORMAL TEXT CONVERSATION
   try {
     const history = await ai.getHistory(userId, isVip ? 18 : 10);
     const memories = await ai.getMemories(userId);
