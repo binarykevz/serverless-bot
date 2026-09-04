@@ -44,7 +44,7 @@ export class KevinAI {
   private vipIds: Set<string>;
 
   constructor(env: KevinAIEnv) {
-    this.model = env.AI_ROUTER_MODEL || "google/gemma-4-26b-a4b-it:free";
+    this.model = env.AI_ROUTER_MODEL || "nvidia/nemotron-3-ultra-550b-a55b:free";
     this.imageApiUrl = env.IMAGE_API_URL || "https://media-api.markmykevin.workers.dev/api/images/random?limit=1";
     this.mediaApi = env.MEDIA_API;
 
