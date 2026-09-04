@@ -4,7 +4,7 @@ compatibility_date = "2025-01-01"
 nodejs_compat = true
 
 [vars]
-AI_ROUTER_MODEL = "google/gemma-4-26b-a4b-it:free"
+AI_ROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 IMAGE_API_URL = "https://media-api.markmykevin.workers.dev/api/images/random?limit=1"
 VIP_USER_IDS = "6076887662,6895315219"
 
